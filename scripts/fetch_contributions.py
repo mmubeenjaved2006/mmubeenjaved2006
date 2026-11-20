@@ -1,21 +1,120 @@
-"""Read GitHub's public contributions HTML; fail rather than invent data."""
-from urllib.request import Request,urlopen
-from html.parser import HTMLParser
+
+"""Fetch real GitHub contributions using the GitHub GraphQL API."""
+
+import json
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import json,re,datetime
-USER='mmubeenjaved2006'
-class Parser(HTMLParser):
- def __init__(self):super().__init__();self.days={}
- def handle_starttag(self,tag,attrs):
-  a=dict(attrs)
-  if tag not in ('td','tool-tip','rect'):return
-  date=a.get('data-date') or a.get('data-iso-date'); count=a.get('data-count')
-  if date and count is not None and re.fullmatch(r'\d{4}-\d{2}-\d{2}',date):self.days[date]=int(count)
-req=Request(f'https://github.com/users/{USER}/contributions',headers={'User-Agent':'Mozilla/5.0 GitHub-profile-README'})
-page=urlopen(req,timeout=25).read().decode('utf-8')
-parser=Parser();parser.feed(page)
-if len(parser.days)<300:raise RuntimeError(f'Could only parse {len(parser.days)} days. GitHub may have changed its public HTML. Existing graph is preserved.')
-days=[{'date':k,'count':v} for k,v in sorted(parser.days.items())]
-path=Path(__file__).resolve().parents[1]/'data'/'contributions.json';path.parent.mkdir(exist_ok=True)
-path.write_text(json.dumps({'user':USER,'days':days},indent=2)+'\n',encoding='utf8')
-print('Fetched',len(days),'real contribution days')
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+
+USER = "mmubeenjaved2006"
+TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+
+if not TOKEN:
+    raise RuntimeError(
+        "Missing GitHub token. Set GH_TOKEN in GitHub Actions."
+    )
+
+today = datetime.now(timezone.utc)
+start = today - timedelta(days=365)
+
+query = """
+query($login: String!, $from: DateTime!, $to: DateTime!) {
+  user(login: $login) {
+    contributionsCollection(from: $from, to: $to) {
+      contributionCalendar {
+        weeks {
+          contributionDays {
+            date
+            contributionCount
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+payload = json.dumps({
+    "query": query,
+    "variables": {
+        "login": USER,
+        "from": start.isoformat(),
+        "to": today.isoformat()
+    }
+}).encode("utf-8")
+
+request = Request(
+    "https://api.github.com/graphql",
+    data=payload,
+    headers={
+        "Authorization": f"Bearer {TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Mubeen-GitHub-Profile"
+    },
+    method="POST"
+)
+
+try:
+    with urlopen(request, timeout=30) as response:
+        result = json.load(response)
+except HTTPError as error:
+    details = error.read().decode("utf-8", errors="replace")
+    raise RuntimeError(
+        f"GitHub API HTTP {error.code}: {details}"
+    ) from error
+except URLError as error:
+    raise RuntimeError(
+        f"Could not connect to GitHub API: {error}"
+    ) from error
+
+if result.get("errors"):
+    raise RuntimeError(
+        f"GitHub GraphQL errors: {result['errors']}"
+    )
+
+user = (result.get("data") or {}).get("user")
+if not user:
+    raise RuntimeError("GitHub user not found.")
+
+weeks = (
+    user["contributionsCollection"]
+    ["contributionCalendar"]["weeks"]
+)
+
+days = [
+    {
+        "date": day["date"],
+        "count": day["contributionCount"]
+    }
+    for week in weeks
+    for day in week["contributionDays"]
+]
+
+days.sort(key=lambda item: item["date"])
+
+if len(days) < 300:
+    raise RuntimeError(
+        f"Only received {len(days)} contribution days."
+    )
+
+output = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "contributions.json"
+)
+
+output.parent.mkdir(parents=True, exist_ok=True)
+
+output.write_text(
+    json.dumps(
+        {"user": USER, "days": days},
+        indent=2
+    ) + "\n",
+    encoding="utf-8"
+)
+
+print(f"Successfully fetched {len(days)} contribution days.")
+print(f"Saved to: {output}")
