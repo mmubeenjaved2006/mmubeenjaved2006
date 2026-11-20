@@ -40,7 +40,7 @@ I'm **Mubeen Javed**, a MERN Stack Developer and BS Finance & Technology student
 ### GitHub activity
 
 <!-- ACTIVITY_START -->
-<!-- The workflow will insert the activity card after the first successful data fetch. -->
+<img src="./cards/activity.svg" width="100%" alt="Real public GitHub contribution activity" />
 <!-- ACTIVITY_END -->
 
 ### Let's connect
